@@ -1,0 +1,17 @@
+# .gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Generated model files
+*.engine
+
+# Log files
+*.log
+*.log.full
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
