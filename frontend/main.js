@@ -1,5 +1,5 @@
 // --- CONFIGURATION ---
-const COMPANION_COMPUTER_IP = '192.168.10.100'; // <-- 192.168.10.100 for Drone and 127.0.0.1 for SITL
+const COMPANION_COMPUTER_IP = '192.168.10.118'; // <-- 192.168.10.100 for Drone and 127.0.0.1 for SITL
 
 // --- MAP INITIALIZATION ---
 const map = L.map('map').setView([0, 0], 2);
@@ -77,12 +77,10 @@ function updateAll(state) {
             armStatusElem.textContent = 'ARMED';
             armStatusElem.classList.remove('disarmed');
             armStatusElem.classList.add('armed');
-            armStatusElem.style.backgroundColor = 'var(--secondary-color)';
         } else {
             armStatusElem.textContent = 'DISARMED';
             armStatusElem.classList.remove('armed');
             armStatusElem.classList.add('disarmed');
-            armStatusElem.style.backgroundColor = 'var(--error-color)';
         }
     }
 

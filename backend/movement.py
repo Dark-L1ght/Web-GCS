@@ -217,7 +217,7 @@ def execute_precision_landing_sequence(master, sock):
                         0, master.target_system, master.target_component,
                         mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                         int(0b0000111111000111), 0, 0, 0,
-                        fwd_vel, right_vel, 0,  # <<< Note: down_vel is 0 for safety
+                        fwd_vel * 0.5, right_vel * 0.5, 0,  # <<< Note: down_vel is 0 for safety
                         0, 0, 0, 0, 0))
                 else:
                     # If we never saw the target, just hover in place
