@@ -143,15 +143,28 @@ def execute_precision_landing_sequence(master, sock):
     """
     Handles the complete tracking and landing process at a location.
     Listens for detection data and controls the drone until it has landed and disarmed.
+    If the detected object moves out of the camera's sight, it moves back to the last known position.
     """
     flush_socket_buffer(sock)
     print("Starting precision landing sequence...")
     state = "TRACKING"
     landing_complete = False
+    last_known_detection = None # Variable to store the last valid detection
+
     while not landing_complete:
         try:
+            # Receive new detection data
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
+
+            # <<< NEW LOGIC: Check if the received packet actually contains a target >>>
+            # If not, we treat it the same as a timeout.
+            if "x_center" not in detection or "y_center" not in detection:
+                print("Received status, but no target in frame.")
+                raise socket.timeout() # Manually trigger the exception to reuse the "move back" logic
+
+            last_known_detection = detection # <<< Store the latest successful detection if it's valid
+
             if state == "TRACKING":
                 x, y, area = detection["x_center"], detection["y_center"], detection["area"]
                 w, h = detection["frame_width"], detection["frame_height"]
@@ -159,10 +172,10 @@ def execute_precision_landing_sequence(master, sock):
                 fwd_vel, right_vel, down_vel = calculate_velocities(x, y, w, h, area)
                 
                 master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
-                     0, master.target_system, master.target_component,
-                     mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-                     int(0b0000111111000111), 0, 0, 0,
-                     fwd_vel, right_vel, down_vel, 0, 0, 0, 0, 0))
+                    0, master.target_system, master.target_component,
+                    mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+                    int(0b0000111111000111), 0, 0, 0,
+                    fwd_vel, right_vel, down_vel, 0, 0, 0, 0, 0))
                 
                 center_error_ratio = abs(x - w / 2) / w
                 area_ratio = area / (w * h)
@@ -173,6 +186,7 @@ def execute_precision_landing_sequence(master, sock):
                     state = "PRECISION_LAND"
             
             elif state == "PRECISION_LAND":
+                # (The rest of the landing logic remains the same)
                 print("PRECISION_LAND: Landing...")
                 alt_msg = master.recv_match(type='RANGEFINDER', blocking=True, timeout=1)
                 if alt_msg and alt_msg.distance < 0.75:
@@ -184,15 +198,35 @@ def execute_precision_landing_sequence(master, sock):
                     landing_complete = True
                     time.sleep(5)
                     continue
-        
+    
         except socket.timeout:
-            print("No detection data received. Hovering.")
+            # <<< This block now handles both a true timeout AND a "no target in frame" packet >>>
+            print("Target lost from sight.")
             if state in ["TRACKING", "PRECISION_LAND"]:
-                master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
-                    0, master.target_system, master.target_component,
-                    mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-                    int(0b0000111111000111), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-        
+                if last_known_detection:
+                    # If we have a last known position, move towards it
+                    print("-> Moving back to last known target position...")
+                    x, y, area = last_known_detection["x_center"], last_known_detection["y_center"], last_known_detection["area"]
+                    w, h = last_known_detection["frame_width"], last_known_detection["frame_height"]
+                    
+                    # Calculate horizontal velocity to return to target
+                    fwd_vel, right_vel, _ = calculate_velocities(x, y, w, h, area)
+                    
+                    # Send command to move horizontally (down_vel is 0 for safety)
+                    master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
+                        0, master.target_system, master.target_component,
+                        mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+                        int(0b0000111111000111), 0, 0, 0,
+                        fwd_vel, right_vel, 0,  # <<< Note: down_vel is 0 for safety
+                        0, 0, 0, 0, 0))
+                else:
+                    # If we never saw the target, just hover in place
+                    print("-> No previous detection data. Hovering.")
+                    master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
+                        0, master.target_system, master.target_component,
+                        mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+                        int(0b0000111111000111), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    
         except (json.JSONDecodeError, KeyError) as e:
             print(f"Error processing detection data: {e}")
 

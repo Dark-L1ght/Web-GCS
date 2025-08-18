@@ -5,7 +5,7 @@ from pymavlink import mavutil
 
 # --- MAVLink Connection ---
 # Listen for incoming UDP packets from the companion computer or SITL
-connection_string = 'udp:0.0.0.0:14552' # udp:0.0.0.0:14550 for WiFi
+connection_string = 'udp:0.0.0.0:14552' # udp:0.0.0.0:14550 for all IP and tcp:127.0.0.1:5760 for SITL
 master = mavutil.mavlink_connection(connection_string)
 print(f"Waiting for heartbeat on {connection_string}...")
 master.wait_heartbeat()

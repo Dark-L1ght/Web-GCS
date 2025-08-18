@@ -48,13 +48,8 @@ print(f"UDP socket created to send data to {UDP_IP}:{UDP_PORT}")
 
 def run_inference_and_send_data(frame):
     """
-    Runs YOLO inference, sends detection data via UDP, and returns the annotated frame.
-    
-    Args:
-        frame: A numpy array representing the camera image.
-        
-    Returns:
-        The frame with inference results drawn on it.
+    Runs YOLO inference, ALWAYS sends detection data/status via UDP, 
+    and returns the annotated frame.
     """
     # 1. Run YOLO inference
     results = model(frame, imgsz=640, conf=0.6, verbose=False)
@@ -62,36 +57,40 @@ def run_inference_and_send_data(frame):
     # 2. Get the annotated frame to display in the web UI
     annotated_frame = results[0].plot()
     
-    # 3. Extract detection data to send over UDP
+    # 3. Extract detection data
     boxes = results[0].boxes.xyxy.cpu().numpy()
     classes = results[0].boxes.cls.cpu().numpy()
     
-    # Find all targets matching the desired class
     targets = [box for i, box in enumerate(boxes) if classes[i] == TARGET_CLASS]
     
-    # 4. If targets are found, process and send data
+    # --- MODIFIED LOGIC ---
+    # 4. If targets are found, process and send TRACKING data
     if targets:
-        # Find the largest target by area
         largest_target = max(targets, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
         
-        # Calculate center coordinates and area
         x_center = (largest_target[0] + largest_target[2]) / 2
         y_center = (largest_target[1] + largest_target[3]) / 2
         area = (largest_target[2] - largest_target[0]) * (largest_target[3] - largest_target[1])
         
-        # Prepare data packet for UDP
+        # Prepare data packet for tracking
         data_packet = {
             "x_center": float(x_center),
             "y_center": float(y_center),
             "area": float(area),
             "frame_width": int(frame.shape[1]),
-            "frame_height": int(frame.shape[0]),
-            "state": "TRACKING"
+            "frame_height": int(frame.shape[0])
         }
-        
-        # Send data via UDP to the movement script
-        sock.sendto(json.dumps(data_packet).encode(), (UDP_IP, UDP_PORT))
-        
+    
+    # 5. <<< NEW: If NO targets are found, send a SEARCHING status >>>
+    else:
+        # Prepare a simple status packet
+        data_packet = {
+            "state": "SEARCHING"
+        }
+    
+    # 6. Always send the resulting packet
+    sock.sendto(json.dumps(data_packet).encode(), (UDP_IP, UDP_PORT))
+    
     return annotated_frame
 
 
