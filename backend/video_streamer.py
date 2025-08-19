@@ -18,7 +18,7 @@ UDP_IP = "127.0.0.2"
 UDP_PORT = 5005
 
 # YOLO Model Config
-TARGET_CLASS = 0  # 0 is typically the 'person' class in COCO models
+TARGET_CLASS = 0  # 0 is orange object target
 
 # --- Shared Resources ---
 # A lock to ensure thread-safe access to the output frame

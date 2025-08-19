@@ -33,7 +33,7 @@ header {
 header h1 {
     margin: 0;
     font-size: clamp(1rem, 2.5vw, 1.5rem);
-    color: var(--primary-color);
+    color: rgb(255, 115, 0);
 }
 .status-bar { display: flex; gap: clamp(0.75rem, 3vw, 1.5rem); }
 .status-item { display: flex; flex-direction: column; align-items: center; }
@@ -148,6 +148,35 @@ header h1 {
 #arm-status.disarmed {
     color: var(--error-color); /* Red */
 }
+
+/* --- Action Button Styles --- */
+.action-button {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-top: 5px;
+    font-size: 16px;
+    font-weight: bold;
+    color: #ffffff;
+    background-color: #007bff; /* A nice blue color */
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    box-sizing: border-box; /* Ensures padding doesn't affect width */
+}
+
+.action-button:hover {
+    background-color: #0056b3; /* A darker blue on hover */
+}
+
+/* Style for when the button is disabled (e.g., when disconnected) */
+.action-button:disabled {
+    background-color: #cccccc; /* Muted gray */
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
 .log-message { padding: 0.2rem 0.4rem; border-radius: 3px; margin-bottom: 0.3rem; white-space: pre-wrap; }
 .log-message.severity-0, .log-message.severity-1, .log-message.severity-2 { background-color: #e06c7544; }
 .log-message.severity-3, .log-message.severity-4 { background-color: #e5c07b44; }

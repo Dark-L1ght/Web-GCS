@@ -4,7 +4,7 @@ const COMPANION_COMPUTER_IP = '192.168.10.118'; // <-- 192.168.10.100 for Drone 
 // --- MAP INITIALIZATION ---
 const map = L.map('map').setView([0, 0], 2);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 22, // Corrected from 19 to a higher value for better zoom
+    maxZoom: 22,
 }).addTo(map);
 
 const droneIcon = L.icon({
@@ -16,7 +16,7 @@ let vehicleMarker = null;
 let mapInitialized = false;
 
 // --- UI ELEMENT REFERENCES ---
-const cameraFeedElem = document.getElementById('camera-feed'); // FIX: Added this missing variable
+const cameraFeedElem = document.getElementById('camera-feed');
 const connectionStatusElem = document.getElementById('connection-status');
 const flightModeElem = document.getElementById('flight-mode');
 const batteryLevelElem = document.getElementById('battery-level');
@@ -30,27 +30,35 @@ const longitudeElem = document.getElementById('data-longitude');
 const latitudeElem = document.getElementById('data-latitude');
 const groundspeedElem = document.getElementById('data-groundspeed');
 const climbElem = document.getElementById('data-climb');
+const distanceElem = document.getElementById('data-rangefinder'); 
+const startMissionBtn = document.getElementById('start-mission-btn');
 
 // --- WEBSOCKET LOGIC ---
+let wsConnection = null;
+
 function connectWebSocket() {
     const ws = new WebSocket(`ws://${window.location.hostname || 'localhost'}:8765`);
     ws.onopen = () => {
         console.log('Connected to MAVLink WebSocket server!');
         connectionStatusElem.textContent = 'CONNECTED';
         connectionStatusElem.style.backgroundColor = 'var(--secondary-color)';
+        wsConnection = ws;
+        startMissionBtn.disabled = false;
     };
     ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-            updateLog(data);
-        } else {
-            updateAll(data);
+        const message = JSON.parse(event.data);
+        if (message.type === 'log') {
+            updateLog(message);
+        } else if (message.type === 'state') {
+            updateAll(message.data);
         }
     };
     ws.onclose = () => {
         console.log('Disconnected. Reconnecting in 3s...');
         connectionStatusElem.textContent = 'DISCONNECTED';
         connectionStatusElem.style.backgroundColor = 'var(--error-color)';
+        wsConnection = null;
+        startMissionBtn.disabled = true;
         setTimeout(connectWebSocket, 3000);
     };
     ws.onerror = (error) => {
@@ -58,6 +66,20 @@ function connectWebSocket() {
         ws.close();
     };
 }
+
+// <--- 4. ADD EVENT LISTENER FOR THE BUTTON ---
+startMissionBtn.addEventListener('click', () => {
+    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        const command = {
+            action: 'start_mission'
+        };
+        wsConnection.send(JSON.stringify(command));
+        console.log('Sent "start_mission" command to backend.');
+        alert('Mission start command sent!');
+    } else {
+        alert('Error: Cannot send command. Not connected to the drone.');
+    }
+});
 
 // --- UPDATE FUNCTIONS ---
 function updateAll(state) {
@@ -71,6 +93,7 @@ function updateAll(state) {
     if (state.level !== undefined) batteryLevelElem.textContent = `${state.level}%`;
     if (state.groundspeed != null) groundspeedElem.textContent = `${state.groundspeed.toFixed(2)} m/s`;
     if (state.climb != null) climbElem.textContent = `${state.climb.toFixed(2)} m/s`;
+    if (state.distance != null) distanceElem.textContent = `${state.distance.toFixed(2)} m`;
 
     if (state.armed !== undefined) {
         if (state.armed) {
@@ -87,7 +110,7 @@ function updateAll(state) {
     if (typeof state.lat === 'number' && typeof state.lon === 'number') {
         const latlng = [state.lat, state.lon];
         if (!mapInitialized) {
-            map.setView(latlng, 19); // FIX: Changed invalid zoom of 25 to 19
+            map.setView(latlng, 19);
             vehicleMarker = L.marker(latlng, { icon: droneIcon, rotationAngle: 0 }).addTo(map);
             mapInitialized = true;
         } else {
@@ -110,4 +133,5 @@ function updateLog(log) {
 
 // --- START THE APP ---
 cameraFeedElem.src = `http://${COMPANION_COMPUTER_IP}:5001/video_feed`;
+startMissionBtn.disabled = true;
 connectWebSocket();

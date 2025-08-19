@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced MAVLink GCS</title>
+    <title>King Phoenix GCS</title>
 
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -14,7 +14,7 @@
 <body>
 
 <header>
-    <h1>MAVLink GCS</h1>
+    <h1>King Phoenix AIO GCS</h1>
     <div class="status-bar">
         <div class="status-item">
             <div class="label">Arm Status</div>
@@ -41,7 +41,7 @@
 
         <div class="content-area">
             <div id="camera-panel" class="panel">
-                <img id="camera-feed" alt="Camera Feed">
+                <img id="camera-feed" alt="/assets/camera-placeholder.jpg">
             </div>
             <div id="map-panel" class="panel">
                 <h2>Satellite Map</h2>
@@ -50,6 +50,10 @@
         </div>
 
         <div class="sidebar">
+            <div id="actions-panel" class="panel">
+                <h2>Actions</h2>
+                <button id="start-mission-btn" class="action-button">Start Mission</button>
+            </div>
             <div id="flight-data-panel" class="panel">
                 <h2>Flight Data</h2>
                 <div class="data-grid">
@@ -61,6 +65,7 @@
                     <div class="data-point"> <div class="label">Longitude</div> <div class="value" id="data-longitude">--</div> </div>
                     <div class="data-point"> <div class="label">Ground Speed</div> <div class="value" id="data-groundspeed">-- m/s</div> </div>
                     <div class="data-point"> <div class="label">Vertical Speed</div> <div class="value" id="data-climb">-- m/s</div> </div>
+                    <div class="data-point"> <div class="label">Rangefinder</div> <div class="value" id="data-rangefinder">-- m</div> </div>
                 </div>
             </div>
             <div id="log-panel" class="panel">
