@@ -32,6 +32,7 @@ const groundspeedElem = document.getElementById('data-groundspeed');
 const climbElem = document.getElementById('data-climb');
 const distanceElem = document.getElementById('data-rangefinder'); 
 const startMissionBtn = document.getElementById('start-mission-btn');
+const stopMissionBtn = document.getElementById('stop-mission-btn');
 
 // --- WEBSOCKET LOGIC ---
 let wsConnection = null;
@@ -44,6 +45,7 @@ function connectWebSocket() {
         connectionStatusElem.style.backgroundColor = 'var(--secondary-color)';
         wsConnection = ws;
         startMissionBtn.disabled = false;
+        stopMissionBtn.disabled = false;
     };
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
@@ -59,6 +61,7 @@ function connectWebSocket() {
         connectionStatusElem.style.backgroundColor = 'var(--error-color)';
         wsConnection = null;
         startMissionBtn.disabled = true;
+        stopMissionBtn.disabled = true;
         setTimeout(connectWebSocket, 3000);
     };
     ws.onerror = (error) => {
@@ -80,6 +83,20 @@ startMissionBtn.addEventListener('click', () => {
         alert('Error: Cannot send command. Not connected to the drone.');
     }
 });
+
+stopMissionBtn.addEventListener('click', () => {
+    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        const command = {
+            action: 'stop_mission' // <-- New action type
+        };
+        wsConnection.send(JSON.stringify(command));
+        console.log('Sent "stop_mission" command to backend.');
+        alert('Mission stop command sent!');
+    } else {
+        alert('Error: Cannot send command. Not connected to the drone.');
+    }
+});
+
 
 // --- UPDATE FUNCTIONS ---
 function updateAll(state) {

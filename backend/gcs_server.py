@@ -2,14 +2,13 @@ import asyncio
 import json
 import websockets
 from pymavlink import mavutil
-import paramiko # <--- 1. IMPORT PARAMIKO
+import paramiko
 
 # --- SSH Configuration ---
 DRONE_IP = '192.168.10.118' # IP DRONE
 DRONE_USER = 'kingphoenix' # USERNAME DRONE
 
 # --- MAVLink Connection ---
-# This part remains the same
 connection_string = 'udp:0.0.0.0:14552'
 master = mavutil.mavlink_connection(connection_string)
 print(f"Waiting for heartbeat on {connection_string}...")
@@ -17,8 +16,8 @@ master.wait_heartbeat()
 print("Heartbeat received! MAVLink connection established.")
 
 # --- REQUEST DATA STREAMS ---
-# This part remains the same
 print("Requesting data streams...")
+# (Your data stream requests remain the same)
 master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 500000, 0, 0, 0, 0, 0)
 master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 500000, 0, 0, 0, 0, 0)
 master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 500000, 0, 0, 0, 0, 0)
@@ -27,11 +26,10 @@ master.mav.command_long_send(master.target_system, master.target_component, mavu
 master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, mavutil.mavlink.MAVLINK_MSG_ID_RANGEFINDER, 1000000, 0, 0, 0, 0, 0)
 print("Data streams requested.")
 
-# Global variables remain the same
+# Global variables
 connected_clients = set()
 vehicle_state = {}
 
-# <--- 3. ADD THE SSH EXECUTION FUNCTION ---
 def execute_ssh_command(command):
     """Connects to the drone via SSH and executes a command."""
     try:
@@ -40,18 +38,38 @@ def execute_ssh_command(command):
         print(f"Connecting to {DRONE_USER}@{DRONE_IP} via SSH...")
         ssh.connect(DRONE_IP, username=DRONE_USER) # Assumes SSH key setup
         print(f"Executing remote command: {command}")
-        # This executes the command and does not wait for it to complete
         stdin, stdout, stderr = ssh.exec_command(command)
-        print("Mission start command sent successfully.")
+        
+        stdout_lines = stdout.readlines()
+        stderr_lines = stderr.readlines()
+        if stdout_lines:
+            print("SSH Command Output:", "".join(stdout_lines))
+        if stderr_lines:
+            print("SSH Command Error:", "".join(stderr_lines))
+        
+        print("SSH command sent successfully.")
     except Exception as e:
         print(f"SSH Execution Failed: {e}")
     finally:
-        # Ensure the connection is closed
         if 'ssh' in locals() and ssh.get_transport().is_active():
             ssh.close()
             print("SSH connection closed.")
 
-# The mavlink_loop function is completely unchanged
+# ### NEW FUNCTION ###
+def stop_mission_and_land():
+    """Terminates the remote mission script and commands the drone to land."""
+    print("Attempting to stop remote mission script...")
+    # Command to find the process ID of movement.py and kill it forcefully
+    kill_command = "pgrep -f movement.py | xargs kill -9"
+    execute_ssh_command(kill_command)
+    
+    print("Remote script terminated. Commanding drone to LAND.")
+    # Send a land command as a safety measure
+    master.mav.command_long_send(
+        master.target_system, master.target_component,
+        mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0, 0, 0, 0, 0, 0
+    )
+
 async def mavlink_loop():
     """Continuously read MAVLink messages and forward them."""
     while True:
@@ -61,6 +79,7 @@ async def mavlink_loop():
             blocking=False
         )
         if msg:
+            # (Your message handling logic remains the same)
             data = None
             msg_type = msg.get_type()
 
@@ -99,26 +118,33 @@ async def mavlink_loop():
                 websockets.broadcast(connected_clients, json.dumps(state_update))
         await asyncio.sleep(0.01)
 
-# <--- 4. MODIFY THE HANDLER TO LISTEN FOR COMMANDS ---
+# ### MODIFIED FUNCTION ###
+# ### MODIFIED FUNCTION ###
 async def handler(websocket):
     """Handle new WebSocket connections and listen for incoming commands."""
     print(f"Client connected from {websocket.remote_address}")
     connected_clients.add(websocket)
     try:
-        # Send the initial state upon connection
         if vehicle_state:
             initial_state = {'type': 'state', 'data': vehicle_state}
             await websocket.send(json.dumps(initial_state))
         
-        # Listen for incoming messages from the web client
         async for message in websocket:
             try:
                 command = json.loads(message)
-                if command.get('action') == 'start_mission':
+                action = command.get('action')
+
+                if action == 'start_mission':
                     print("Received 'start_mission' command from web client.")
-                    # IMPORTANT: Use the FULL path to your script on the drone
-                    mission_command = 'python3 /home/kingphoenix/Web-GCS/backend/movement.py' # <-- CONFIGURE THIS PATH
-                    execute_ssh_command(mission_command)
+                    mission_command = 'python3 /home/kingphoenix/Web-GCS/backend/movement.py'
+                    
+                    # Run the blocking SSH call in a separate thread to not freeze the server
+                    asyncio.create_task(asyncio.to_thread(execute_ssh_command, mission_command))
+
+                elif action == 'stop_mission':
+                    print("Received 'stop_mission' command from web client.")
+                    stop_mission_and_land()
+
             except json.JSONDecodeError:
                 print(f"Received invalid JSON from client: {message}")
             except Exception as e:
@@ -127,18 +153,11 @@ async def handler(websocket):
         print(f"Client disconnected from {websocket.remote_address}")
         connected_clients.remove(websocket)
 
-# <--- 5. MODIFY MAIN TO RUN BOTH TASKS CONCURRENTLY ---
 async def main():
     """Start the MAVLink loop and the WebSocket server to run in parallel."""
-    # Start the WebSocket server
     server = await websockets.serve(handler, "0.0.0.0", 8765)
     print("WebSocket server started on ws://0.0.0.0:8765")
-    
-    # Create a task for the mavlink_loop to run in the background
     mavlink_task = asyncio.create_task(mavlink_loop())
-    
-    # Wait for both the server and the mavlink loop to complete
-    # The server runs forever, so this will keep the program alive
     await asyncio.gather(server.wait_closed(), mavlink_task)
 
 if __name__ == "__main__":

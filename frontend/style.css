@@ -149,6 +149,7 @@ header h1 {
     color: var(--error-color); /* Red */
 }
 
+
 /* --- Action Button Styles --- */
 .action-button {
     display: block;
@@ -158,24 +159,44 @@ header h1 {
     font-size: 16px;
     font-weight: bold;
     color: #ffffff;
-    background-color: #007bff; /* A nice blue color */
     border: none;
     border-radius: 5px;
     cursor: pointer;
     transition: background-color 0.3s ease;
-    box-sizing: border-box; /* Ensures padding doesn't affect width */
+    box-sizing: border-box;
+}
+
+#start-mission-btn {
+    background-color: var(--secondary-color);
+}
+
+#stop-mission-btn {
+    background-color: var(--error-color);
 }
 
 .action-button:hover {
-    background-color: #0056b3; /* A darker blue on hover */
+    filter: brightness(1.1);
 }
 
-/* Style for when the button is disabled (e.g., when disconnected) */
+/* Style for when ANY action button is disabled */
 .action-button:disabled {
-    background-color: #cccccc; /* Muted gray */
+    background-color: #5c5c5c;
     cursor: not-allowed;
     opacity: 0.7;
+    filter: none; /* Remove hover effect when disabled */
 }
+
+/* Override for the stop button's hover to prevent color clash */
+#stop-mission-btn:hover {
+    filter: brightness(1.1);
+}
+
+/* Ensure the disabled stop button gets the disabled style */
+/* This rule is more specific and will now work correctly */
+#stop-mission-btn:disabled {
+    background-color: #5c5c5c;
+}
+
 
 .log-message { padding: 0.2rem 0.4rem; border-radius: 3px; margin-bottom: 0.3rem; white-space: pre-wrap; }
 .log-message.severity-0, .log-message.severity-1, .log-message.severity-2 { background-color: #e06c7544; }
