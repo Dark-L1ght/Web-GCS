@@ -118,8 +118,6 @@ async def mavlink_loop():
                 websockets.broadcast(connected_clients, json.dumps(state_update))
         await asyncio.sleep(0.01)
 
-# ### MODIFIED FUNCTION ###
-# ### MODIFIED FUNCTION ###
 async def handler(websocket):
     """Handle new WebSocket connections and listen for incoming commands."""
     print(f"Client connected from {websocket.remote_address}")
@@ -136,9 +134,22 @@ async def handler(websocket):
 
                 if action == 'start_mission':
                     print("Received 'start_mission' command from web client.")
-                    mission_command = 'python3 /home/kingphoenix/Web-GCS/backend/movement.py'
                     
-                    # Run the blocking SSH call in a separate thread to not freeze the server
+                    waypoints = command.get('waypoints')
+                    if not waypoints or len(waypoints) != 4:
+                        print(f"Mission start aborted: Invalid waypoints received: {waypoints}")
+                        continue # Ignore the command
+
+                    # Convert waypoints to a JSON string for command-line argument
+                    # The outer single quotes are for the shell command
+                    waypoints_json_str = json.dumps(waypoints)
+                    
+                    # IMPORTANT: Update this path to be the correct one on your drone
+                    script_path = '/home/kingphoenix/Web-GCS/backend/movement.py'
+                    
+                    mission_command = f"python3 {script_path} '{waypoints_json_str}'"
+                    
+                    # Run the blocking SSH call in a separate thread
                     asyncio.create_task(asyncio.to_thread(execute_ssh_command, mission_command))
 
                 elif action == 'stop_mission':

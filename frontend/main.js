@@ -1,5 +1,11 @@
 // --- CONFIGURATION ---
-const COMPANION_COMPUTER_IP = '192.168.10.118'; // <-- 192.168.10.100 for Drone and 127.0.0.1 for SITL
+const COMPANION_COMPUTER_IP = '192.168.10.118';
+const MISSION_ALTITUDE = 3.5; // Default altitude for waypoints
+
+// --- NEW: WAYPOINT STATE ---
+let recordedWaypoints = [];
+const WAYPOINT_LABELS = ['Logistics 1', 'Logistics 2', 'Barrel', 'Final Land'];
+let currentVehicleState = {}; // Store the latest state globally
 
 // --- MAP INITIALIZATION ---
 const map = L.map('map').setView([0, 0], 2);
@@ -30,9 +36,15 @@ const longitudeElem = document.getElementById('data-longitude');
 const latitudeElem = document.getElementById('data-latitude');
 const groundspeedElem = document.getElementById('data-groundspeed');
 const climbElem = document.getElementById('data-climb');
-const distanceElem = document.getElementById('data-rangefinder'); 
+const distanceElem = document.getElementById('data-rangefinder');
 const startMissionBtn = document.getElementById('start-mission-btn');
 const stopMissionBtn = document.getElementById('stop-mission-btn');
+
+// --- NEW: WAYPOINT UI REFERENCES ---
+const recordWpBtn = document.getElementById('record-wp-btn');
+const clearWpBtn = document.getElementById('clear-wp-btn');
+const wpDisplay = document.getElementById('wp-display');
+
 
 // --- WEBSOCKET LOGIC ---
 let wsConnection = null;
@@ -44,15 +56,15 @@ function connectWebSocket() {
         connectionStatusElem.textContent = 'CONNECTED';
         connectionStatusElem.style.backgroundColor = 'var(--secondary-color)';
         wsConnection = ws;
-        startMissionBtn.disabled = false;
-        stopMissionBtn.disabled = false;
+        updateUIState(); // NEW: Update UI based on connection
     };
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === 'log') {
             updateLog(message);
         } else if (message.type === 'state') {
-            updateAll(message.data);
+            currentVehicleState = message.data; // NEW: Store state
+            updateAll(currentVehicleState);
         }
     };
     ws.onclose = () => {
@@ -60,8 +72,7 @@ function connectWebSocket() {
         connectionStatusElem.textContent = 'DISCONNECTED';
         connectionStatusElem.style.backgroundColor = 'var(--error-color)';
         wsConnection = null;
-        startMissionBtn.disabled = true;
-        stopMissionBtn.disabled = true;
+        updateUIState(); // NEW: Update UI based on connection
         setTimeout(connectWebSocket, 3000);
     };
     ws.onerror = (error) => {
@@ -70,15 +81,93 @@ function connectWebSocket() {
     };
 }
 
-// <--- 4. ADD EVENT LISTENER FOR THE BUTTON ---
+// --- NEW: WAYPOINT MANAGEMENT FUNCTIONS ---
+function updateWpButton() {
+    const nextIndex = recordedWaypoints.length;
+    if (nextIndex < WAYPOINT_LABELS.length) {
+        recordWpBtn.textContent = `Record ${WAYPOINT_LABELS[nextIndex]}`;
+        recordWpBtn.disabled = false;
+    } else {
+        recordWpBtn.textContent = 'All Waypoints Set';
+        recordWpBtn.disabled = true;
+    }
+}
+
+function updateWpDisplay() {
+    if (recordedWaypoints.length === 0) {
+        wpDisplay.innerHTML = '<p>No waypoints recorded.</p>';
+    } else {
+        let listHtml = '<ol>';
+        recordedWaypoints.forEach((wp, index) => {
+            listHtml += `<li><b>${WAYPOINT_LABELS[index]}:</b> ${wp.lat.toFixed(6)}, ${wp.lon.toFixed(6)}</li>`;
+        });
+        listHtml += '</ol>';
+        wpDisplay.innerHTML = listHtml;
+    }
+}
+
+function updateUIState() {
+    const isConnected = wsConnection && wsConnection.readyState === WebSocket.OPEN;
+    stopMissionBtn.disabled = !isConnected;
+    
+    // Logic for enabling/disabling waypoint and mission buttons
+    if (!isConnected) {
+        recordWpBtn.disabled = true;
+        clearWpBtn.disabled = true;
+        startMissionBtn.disabled = true;
+    } else {
+        clearWpBtn.disabled = recordedWaypoints.length === 0;
+        const allWaypointsSet = recordedWaypoints.length === WAYPOINT_LABELS.length;
+        startMissionBtn.disabled = !allWaypointsSet;
+        recordWpBtn.disabled = allWaypointsSet;
+    }
+}
+
+
+// --- EVENT LISTENERS ---
+recordWpBtn.addEventListener('click', () => {
+    if (typeof currentVehicleState.lat !== 'number' || typeof currentVehicleState.lon !== 'number') {
+        alert("Cannot record waypoint: Current drone location is unknown.");
+        return;
+    }
+
+    if (recordedWaypoints.length < WAYPOINT_LABELS.length) {
+        const newWaypoint = {
+            lat: currentVehicleState.lat,
+            lon: currentVehicleState.lon,
+            alt: MISSION_ALTITUDE
+        };
+        recordedWaypoints.push(newWaypoint);
+        console.log(`Recorded waypoint ${recordedWaypoints.length}:`, newWaypoint);
+        updateWpButton();
+        updateWpDisplay();
+        updateUIState();
+    }
+});
+
+clearWpBtn.addEventListener('click', () => {
+    if (confirm("Are you sure you want to clear all recorded waypoints?")) {
+        recordedWaypoints = [];
+        console.log("Waypoints cleared.");
+        updateWpButton();
+        updateWpDisplay();
+        updateUIState();
+    }
+});
+
 startMissionBtn.addEventListener('click', () => {
     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        if (recordedWaypoints.length !== WAYPOINT_LABELS.length) {
+            alert('Error: Please record all 4 waypoints before starting the mission.');
+            return;
+        }
         const command = {
-            action: 'start_mission'
+            action: 'start_mission',
+            waypoints: recordedWaypoints // NEW: Send waypoints with the command
         };
         wsConnection.send(JSON.stringify(command));
-        console.log('Sent "start_mission" command to backend.');
-        alert('Mission start command sent!');
+        console.log('Sent "start_mission" command with waypoints:', recordedWaypoints);
+        alert('Mission start command sent with recorded waypoints!');
     } else {
         alert('Error: Cannot send command. Not connected to the drone.');
     }
@@ -86,9 +175,7 @@ startMissionBtn.addEventListener('click', () => {
 
 stopMissionBtn.addEventListener('click', () => {
     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-        const command = {
-            action: 'stop_mission' // <-- New action type
-        };
+        const command = { action: 'stop_mission' };
         wsConnection.send(JSON.stringify(command));
         console.log('Sent "stop_mission" command to backend.');
         alert('Mission stop command sent!');
@@ -150,5 +237,5 @@ function updateLog(log) {
 
 // --- START THE APP ---
 cameraFeedElem.src = `http://${COMPANION_COMPUTER_IP}:5001/video_feed`;
-startMissionBtn.disabled = true;
+updateUIState(); // Initial UI setup
 connectWebSocket();

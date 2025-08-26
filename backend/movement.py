@@ -3,11 +3,12 @@ import json
 import time
 import math
 from pymavlink import mavutil
+import sys
 
 # --- Drone & Mission Configuration ---
 CONNECTION_STRING = 'udp:127.0.0.1:14550'
 BAUD_RATE = 921600
-SAFE_ALTITUDE = 3.5  # meters
+TAKEOFF_ALTITUDE = 3.5  # meters
 WAYPOINT_RADIUS = 0.5  # meters
 TRACKING_SPEED = 0.5  # m/s
 FWD_GAIN = 1.0
@@ -46,7 +47,6 @@ WAYPOINTS = [
 data_sock = None
 
 # --- Core Functions ---
-
 def send_control_command(command):
     """Sends a 'pause' or 'resume' command to the detection script via TCP."""
     try:
@@ -141,7 +141,7 @@ def flush_socket_buffer(sock):
             break
 
 def center_above_target(master, sock, target_class_id):
-    """Centers the drone above a target with a specific class ID."""
+    """Centers the drone above a target using dynamic horizontal gain."""
     flush_socket_buffer(sock)
     send_control_command('resume')
     print(f"Centering above target (ID: {target_class_id}) at {CENTERING_ALTITUDE}m...")
@@ -159,11 +159,15 @@ def center_above_target(master, sock, target_class_id):
             return False # Indicate failure
 
         try:
+            # Get altitude first for gain calculation
+            alt_msg = master.recv_match(type='RANGEFINDER', blocking=True, timeout=0.2)
+            current_alt = alt_msg.distance if alt_msg else CENTERING_ALTITUDE
+            
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
-            search_start_time = time.time()
+            search_start_time = time.time() # Reset timeout on successful detection
 
-            # *** MODIFIED: Check for correct state AND class ID ***
+            # Check for correct state AND class ID
             if detection.get("state") != "TRACKING" or detection.get("class_id") != target_class_id:
                 raise socket.timeout()
 
@@ -171,20 +175,29 @@ def center_above_target(master, sock, target_class_id):
             x, y = detection["x_center"], detection["y_center"]
             w, h = detection["frame_width"], detection["frame_height"]
             
+            # --- MODIFIED LOGIC ---
+            # Calculate base velocities
             fwd_vel, right_vel = calculate_velocities(x, y, w, h)
             
-            alt_msg = master.recv_match(type='RANGEFINDER', blocking=True, timeout=0.2)
-            current_alt = alt_msg.distance if alt_msg else CENTERING_ALTITUDE
+            ### Get dynamic gain based on altitude (same as landing function)
+            horizontal_gain = get_dynamic_gain(current_alt)
+            ### Apply the gain to horizontal velocities
+            fwd_vel *= horizontal_gain
+            right_vel *= horizontal_gain
+            
+            # Retain original altitude-hold logic for centering
             alt_error = CENTERING_ALTITUDE - current_alt
-            down_vel = -0.25 * alt_error
+            down_vel = -ALT_GAIN * alt_error # Use ALT_GAIN from config
             
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, fwd_vel, right_vel, down_vel, 0, 0, 0, 0, 0))
 
             center_error_ratio = abs(x - w / 2) / w
-            print(f"CENTERING (ID {target_class_id}): Error: {center_error_ratio:.2%}, Alt: {current_alt:.2f}m")
+            ### Updated print statement to show the gain
+            print(f"CENTERING (ID {target_class_id}): Alt: {current_alt:.2f}m, Gain: {horizontal_gain:.2f}, Err: {center_error_ratio:.2%}")
 
+            # Retain original confirmation logic
             if center_error_ratio < 0.1 and abs(alt_error) < 0.15:
                 if centered_start_time is None:
                     centered_start_time = time.time()
@@ -275,6 +288,21 @@ def execute_precision_landing(master, sock, target_class_id):
 
 def main():
     """Main function to connect to the drone and run the new mission."""
+
+    global WAYPOINTS
+    if len(sys.argv) > 1:
+        try:
+            # sys.argv[1] contains the JSON string of waypoints from gcs_server.py
+            print("Received waypoints from GCS command.")
+            waypoints_from_gcs = json.loads(sys.argv[1])
+            # The JSON will be a list of lists/dicts. Convert to a list of tuples.
+            WAYPOINTS = [ (wp['lat'], wp['lon'], wp['alt']) for wp in waypoints_from_gcs ]
+            print(f"Successfully updated mission waypoints: {WAYPOINTS}")
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            print(f"ERROR: Could not parse waypoints from GCS: {e}. Using default waypoints.")
+    else:
+        print("No waypoints received from GCS. Using default hardcoded waypoints.")
+
     global data_sock
     data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     data_sock.bind((UDP_RECEIVE_IP, UDP_RECEIVE_PORT))
@@ -284,9 +312,12 @@ def main():
     master.wait_heartbeat()
     print(f"Heartbeat from system (system {master.target_system} component {master.target_component})")
 
+    #Requesting Rangefinder data stream
+    master.mav.command_long_send(master.target_system, master.target_component, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0, mavutil.mavlink.MAVLINK_MSG_ID_RANGEFINDER, 1000000, 0, 0, 0, 0, 0)
+
     try:
         send_control_command('pause')
-        arm_and_takeoff(master, SAFE_ALTITUDE)
+        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
 
         # --- Leg 1: Fly to WP1 and Precision Land on Target 0 ---
         print("\n--- MISSION: Leg 1 - Precision Land at Waypoint 1 (Target ID 0) ---")
@@ -296,7 +327,7 @@ def main():
         # --- Leg 2: Takeoff, fly to WP3 and Center on Target 1 ---
         print("\n--- MISSION: Leg 2 - Center over Target at Waypoint 3 (Target ID 1) ---")
         send_control_command('pause')
-        arm_and_takeoff(master, SAFE_ALTITUDE)
+        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
         navigate_to_waypoint(master, WAYPOINTS[2][0], WAYPOINTS[2][1], WAYPOINTS[2][2])
         center_above_target(master, sock=data_sock, target_class_id=1)
 
@@ -309,7 +340,7 @@ def main():
         # --- Leg 4: Takeoff, fly to WP3 and Center on Target 1 Again ---
         print("\n--- MISSION: Leg 4 - Center over Target at Waypoint 3 Again (Target ID 1) ---")
         send_control_command('pause')
-        arm_and_takeoff(master, SAFE_ALTITUDE)
+        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
         navigate_to_waypoint(master, WAYPOINTS[2][0], WAYPOINTS[2][1], WAYPOINTS[2][2])
         center_above_target(master, sock=data_sock, target_class_id=1)
 

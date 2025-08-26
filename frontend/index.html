@@ -50,10 +50,22 @@
         </div>
 
         <div class="sidebar">
+            
+            <div id="waypoint-planner" class="panel">
+                <div class="button-group">
+                <button id="record-wp-btn" class="action-button">Record Logistics 1</button>
+                <button id="clear-wp-btn" class="action-button alt-action">Clear Waypoints</button>
+                </div>
+                <div id="wp-display">
+                    <p>No waypoints recorded.</p>
+                </div>
+            </div>
             <div id="actions-panel" class="panel">
                 <h2>Actions</h2>
-                <button id="start-mission-btn" class="action-button">Start Mission</button>
-                <button id="stop-mission-btn" class="action-button">Stop Mission</button>
+                <div class="button-group">
+                    <button id="start-mission-btn" class="action-button">Start Mission</button>
+                    <button id="stop-mission-btn" class="action-button">Stop Mission</button>
+                </div>
             </div>
             <div id="flight-data-panel" class="panel">
                 <h2>Flight Data</h2>
