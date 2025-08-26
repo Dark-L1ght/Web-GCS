@@ -4,8 +4,6 @@
 __pycache__/
 *.pyc
 
-# Generated model files
-*.engine
 
 # Log files
 *.log
