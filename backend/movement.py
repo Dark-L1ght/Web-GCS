@@ -8,19 +8,29 @@ import sys
 # --- Drone & Mission Configuration ---
 CONNECTION_STRING = 'udp:127.0.0.1:14550'
 BAUD_RATE = 921600
-TAKEOFF_ALTITUDE = 3.5  # meters
+TAKEOFF_ALTITUDE = 2.0  # meters
+ARMING_RETRIES = 3          # Number of times to attempt arming
+ARMING_RETRY_DELAY = 3      # Seconds to wait between arming attempts
 WAYPOINT_RADIUS = 0.5  # meters
 TRACKING_SPEED = 0.5  # m/s
 FWD_GAIN = 1.0
 ALT_GAIN = 0.5
+
 LANDING_APPROACH_ALT = 0.5 # meters, altitude to trigger final LAND command
 LANDING_TIMEOUT = 15 # seconds to search before aborting landing
+
 CENTERING_TIMEOUT = 20 # seconds to search before aborting centering
 CENTERING_ALTITUDE = 1.0 # meters, altitude to hold when centering
 CENTERING_CONFIRM_TIME = 5.0 # seconds, time to hold position to confirm centering
-GAIN_MAX_ALT = 3.5  # Altitude (m) at which the gain is 1.0 (full speed)
+DROP_HOVER_DURATION = 8.0 # Seconds to hover over the barrel for the drop
+
+TARGET_LOST_HOVER_DURATION = 3.0  # Seconds to hover before starting active search
+REACQUIRE_ASCEND_ALTITUDE = 1.5   # Meters to climb above current altitude to search
+REACQUIRE_ASCEND_SPEED = 0.3      # m/s for the search ascent
+
+GAIN_MAX_ALT = 2.0  # Altitude (m) at which the gain is 1.0 (full speed)
 GAIN_MIN_ALT = 0.5  # Altitude (m) at which the gain is at its minimum
-MAX_HORIZONTAL_GAIN = 1.0 # The gain at or above GAIN_MAX_ALT
+MAX_HORIZONTAL_GAIN = 0.8 # The gain at or above GAIN_MAX_ALT
 MIN_HORIZONTAL_GAIN = 0.2 # The minimum gain at or below GAIN_MIN_ALT
 
 # --- UDP Network Configuration ---
@@ -60,32 +70,61 @@ def send_control_command(command):
         print(f"Error sending control command: {e}")
 
 def arm_and_takeoff(master, altitude):
-    """Arms the drone and takes off to a specified altitude."""
+    """
+    Arms the drone and takes off to a specified altitude.
+    Includes a retry mechanism for arming.
+    Returns True on successful takeoff, False on failure.
+    """
     print("Setting mode to GUIDED...")
     master.mav.set_mode_send(
         master.target_system,
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
         GUIDED_MODE
     )
-    print("Arming motors...")
-    master.mav.command_long_send(
-        master.target_system, master.target_component,
-        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
-        1, 0, 0, 0, 0, 0, 0)
-    master.motors_armed_wait()
+    
+    # --- Arming Retry Loop ---
+    for attempt in range(1, ARMING_RETRIES + 1):
+        print(f"Arming motors (Attempt {attempt}/{ARMING_RETRIES})...")
+        try:
+            master.mav.command_long_send(
+                master.target_system, master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
+                1, 0, 0, 0, 0, 0, 0)
+            
+            # Wait for the drone to confirm it's armed. 
+            # This will timeout and raise an exception on failure.
+            master.motors_armed_wait(timeout=5) 
+            
+            print("Motors successfully armed!")
+            break # Exit the loop on success
+            
+        except Exception as e:
+            print(f"Arming failed on attempt {attempt}: {e}")
+            if attempt == ARMING_RETRIES:
+                print("Could not arm motors after all attempts. Aborting takeoff.")
+                return False # Indicate failure
+            print(f"Retrying in {ARMING_RETRY_DELAY} seconds...")
+            time.sleep(ARMING_RETRY_DELAY)
 
+    # --- Takeoff Logic (only runs if arming was successful) ---
     print(f"Taking off to {altitude} meters...")
     master.mav.command_long_send(
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, altitude
     )
+    
+    # Wait for takeoff to complete
     while True:
-        msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True)
+        msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=10)
+        if not msg:
+            print("No GLOBAL_POSITION_INT message received for 10s. Aborting takeoff wait.")
+            return False
+
         current_altitude = msg.relative_alt / 1000.0
         print(f"Current altitude: {current_altitude:.2f}m")
-        if current_altitude >= altitude * 0.90:
+        if current_altitude >= altitude * 0.95:
             print("Target altitude reached.")
-            break
+            return True # Indicate successful takeoff
         time.sleep(0.1)
 
 def land_normally(master):
@@ -141,14 +180,14 @@ def flush_socket_buffer(sock):
             break
 
 def center_above_target(master, sock, target_class_id):
-    """Centers the drone above a target using dynamic horizontal gain."""
+    """Centers the drone, then holds position to simulate a logistic drop."""
     flush_socket_buffer(sock)
     send_control_command('resume')
     print(f"Centering above target (ID: {target_class_id}) at {CENTERING_ALTITUDE}m...")
     
-    last_known_detection = None
     search_start_time = time.time()
     centered_start_time = None
+    last_detection_time = time.time()
 
     while True:
         if time.time() - search_start_time > CENTERING_TIMEOUT:
@@ -156,65 +195,81 @@ def center_above_target(master, sock, target_class_id):
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-            return False # Indicate failure
+            return False
 
         try:
-            # Get altitude first for gain calculation
+            # ... (the entire 'try' block for detection and velocity calculation remains IDENTICAL) ...
             alt_msg = master.recv_match(type='RANGEFINDER', blocking=True, timeout=0.2)
             current_alt = alt_msg.distance if alt_msg else CENTERING_ALTITUDE
             
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
-            search_start_time = time.time() # Reset timeout on successful detection
+            search_start_time = time.time() 
+            last_detection_time = time.time() 
 
-            # Check for correct state AND class ID
             if detection.get("state") != "TRACKING" or detection.get("class_id") != target_class_id:
                 raise socket.timeout()
 
-            last_known_detection = detection
             x, y = detection["x_center"], detection["y_center"]
             w, h = detection["frame_width"], detection["frame_height"]
             
-            # --- MODIFIED LOGIC ---
-            # Calculate base velocities
             fwd_vel, right_vel = calculate_velocities(x, y, w, h)
             
-            ### Get dynamic gain based on altitude (same as landing function)
             horizontal_gain = get_dynamic_gain(current_alt)
-            ### Apply the gain to horizontal velocities
             fwd_vel *= horizontal_gain
             right_vel *= horizontal_gain
             
-            # Retain original altitude-hold logic for centering
             alt_error = CENTERING_ALTITUDE - current_alt
-            down_vel = -ALT_GAIN * alt_error # Use ALT_GAIN from config
+            down_vel = -ALT_GAIN * alt_error
             
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, fwd_vel, right_vel, down_vel, 0, 0, 0, 0, 0))
 
             center_error_ratio = abs(x - w / 2) / w
-            ### Updated print statement to show the gain
             print(f"CENTERING (ID {target_class_id}): Alt: {current_alt:.2f}m, Gain: {horizontal_gain:.2f}, Err: {center_error_ratio:.2%}")
 
-            # Retain original confirmation logic
-            if center_error_ratio < 0.1 and abs(alt_error) < 0.15:
+            if center_error_ratio < 0.10 and abs(alt_error) < 0.15:
                 if centered_start_time is None:
                     centered_start_time = time.time()
                 elif time.time() - centered_start_time > CENTERING_CONFIRM_TIME:
                     print("Target centering confirmed.")
-                    master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
-                        0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-                        VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                    
+                    # --- NEW: Logistic Drop Simulation ---
+                    print(f"Simulating logistic drop. Holding position for {DROP_HOVER_DURATION} seconds...")
+                    drop_start_time = time.time()
+                    while time.time() - drop_start_time < DROP_HOVER_DURATION:
+                        # Continuously send a hover command to counteract drift
+                        master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
+                            0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+                            VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                        
+                        # Print a countdown
+                        time_left = DROP_HOVER_DURATION - (time.time() - drop_start_time)
+                        sys.stdout.write(f"\rDropping... {time_left:.1f}s remaining. ")
+                        sys.stdout.flush()
+                        time.sleep(0.1)
+                    
+                    print("\nDrop complete. Proceeding with mission.")
                     return True
             else:
                 centered_start_time = None
 
         except (socket.timeout, json.JSONDecodeError, KeyError):
-            print(f"Searching for target ID {target_class_id}... Hovering.")
+            # (Target Reacquisition)
+            time_since_lost = time.time() - last_detection_time
+            print(f"Searching for target ID {target_class_id}... Time since last seen: {time_since_lost:.1f}s")
+            
+            vz = 0 
+            if time_since_lost < TARGET_LOST_HOVER_DURATION:
+                print("-> Phase 1: Hovering briefly.")
+            else:
+                print(f"-> Phase 2: Ascending to search at {REACQUIRE_ASCEND_SPEED} m/s.")
+                vz = -REACQUIRE_ASCEND_SPEED
+
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-                VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, vz, 0, 0, 0, 0, 0))
 
 def get_dynamic_gain(current_alt):
     """Calculates a dynamic gain scaling factor based on altitude."""
@@ -225,13 +280,13 @@ def get_dynamic_gain(current_alt):
     return gain
 
 def execute_precision_landing(master, sock, target_class_id):
-    """Manages precision landing on a target with a specific class ID."""
+    """Manages precision landing on a target with reacquisition logic."""
     flush_socket_buffer(sock)
     send_control_command('resume')
     print(f"Starting precision landing sequence on target (ID: {target_class_id})...")
     
-    last_known_detection = None
     search_start_time = time.time()
+    last_detection_time = time.time() # Start with the current time
 
     while True:
         if time.time() - search_start_time > LANDING_TIMEOUT:
@@ -239,7 +294,7 @@ def execute_precision_landing(master, sock, target_class_id):
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-            return
+            return # Exit the function
 
         try:
             alt_msg = master.recv_match(type='RANGEFINDER', blocking=False, timeout=0.05)
@@ -247,13 +302,12 @@ def execute_precision_landing(master, sock, target_class_id):
 
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
-            search_start_time = time.time()
-
-            # *** MODIFIED: Check for correct state AND class ID ***
+            search_start_time = time.time() # Reset main timeout on successful detection
+            last_detection_time = time.time() # Update time of last successful detection
+            
             if detection.get("state") != "TRACKING" or detection.get("class_id") != target_class_id:
                 raise socket.timeout()
 
-            last_known_detection = detection
             x, y, area = detection["x_center"], detection["y_center"], detection["area"]
             w, h = detection["frame_width"], detection["frame_height"]
             
@@ -274,18 +328,33 @@ def execute_precision_landing(master, sock, target_class_id):
             center_error_ratio = abs(x - w / 2) / w
             print(f"LANDING (ID {target_class_id}): Alt: {current_altitude:.2f}m, Gain: {horizontal_gain:.2f}, Err: {center_error_ratio:.2%}")
 
-            if current_altitude < LANDING_APPROACH_ALT and center_error_ratio < 0.1:
+            if current_altitude < LANDING_APPROACH_ALT and center_error_ratio < 0.15:
                 print("Target centered at low altitude. Switching to LAND mode.")
                 land_normally(master)
                 time.sleep(5)
                 return
 
         except (socket.timeout, json.JSONDecodeError, KeyError):
-            print(f"Searching for target ID {target_class_id}... Hovering.")
+            # --- NEW: Target Reacquisition Logic ---
+            time_since_lost = time.time() - last_detection_time
+            print(f"Searching for target ID {target_class_id}... Time since last seen: {time_since_lost:.1f}s")
+            
+            vz = 0 # Default to hover (zero vertical velocity)
+            
+            # Stage 1: Hover briefly
+            if time_since_lost < TARGET_LOST_HOVER_DURATION:
+                print("-> Phase 1: Hovering briefly.")
+                # vz remains 0
+            
+            # Stage 2: Ascend to search
+            else:
+                print(f"-> Phase 2: Ascending to search at {REACQUIRE_ASCEND_SPEED} m/s.")
+                # In MAVLink NED frame, a negative Z velocity is UP.
+                vz = -REACQUIRE_ASCEND_SPEED
+
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-                VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-
+                VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, vz, 0, 0, 0, 0, 0))
 def main():
     """Main function to connect to the drone and run the new mission."""
 
@@ -317,35 +386,38 @@ def main():
 
     try:
         send_control_command('pause')
-        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
+        if not arm_and_takeoff(master, TAKEOFF_ALTITUDE):
+            raise Exception("Failed to takeoff for Mission 1. Aborting mission.")
 
-        # --- Leg 1: Fly to WP1 and Precision Land on Target 0 ---
-        print("\n--- MISSION: Leg 1 - Precision Land at Waypoint 1 (Target ID 0) ---")
+        # --- Mission 1: Fly to WP1 and Precision Land on Target 0 ---
+        print("\n--- MISSION 1: Precision Land at Waypoint 1 (Target ID 0) ---")
         navigate_to_waypoint(master, WAYPOINTS[0][0], WAYPOINTS[0][1], WAYPOINTS[0][2])
         execute_precision_landing(master, sock=data_sock, target_class_id=0)
         
-        # --- Leg 2: Takeoff, fly to WP3 and Center on Target 1 ---
-        print("\n--- MISSION: Leg 2 - Center over Target at Waypoint 3 (Target ID 1) ---")
+        # --- Mission 2: Takeoff, fly to WP3 and Center on Target 1 ---
+        print("\n--- MISSION 2: Center over Target at Waypoint 3 (Target ID 1) ---")
         send_control_command('pause')
-        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
+        if not arm_and_takeoff(master, TAKEOFF_ALTITUDE):
+            raise Exception("Failed to takeoff for Mission 3. Aborting mission.")
         navigate_to_waypoint(master, WAYPOINTS[2][0], WAYPOINTS[2][1], WAYPOINTS[2][2])
         center_above_target(master, sock=data_sock, target_class_id=1)
 
-        # --- Leg 3: Fly to WP2 and Precision Land on Target 0 ---
-        print("\n--- MISSION: Leg 3 - Precision Land at Waypoint 2 (Target ID 0) ---")
+        # --- Mission 3: Fly to WP2 and Precision Land on Target 0 ---
+        print("\n--- MISSION 3: Precision Land at Waypoint 2 (Target ID 0) ---")
         send_control_command('pause')
         navigate_to_waypoint(master, WAYPOINTS[1][0], WAYPOINTS[1][1], WAYPOINTS[1][2])
         execute_precision_landing(master, sock=data_sock, target_class_id=0)
 
-        # --- Leg 4: Takeoff, fly to WP3 and Center on Target 1 Again ---
-        print("\n--- MISSION: Leg 4 - Center over Target at Waypoint 3 Again (Target ID 1) ---")
+        # --- Mission 4: Takeoff, fly to WP3 and Center on Target 1 Again ---
+        print("\n--- MISSION 4: Center over Target at Waypoint 3 Again (Target ID 1) ---")
         send_control_command('pause')
-        arm_and_takeoff(master, TAKEOFF_ALTITUDE)
+        if not arm_and_takeoff(master, TAKEOFF_ALTITUDE):
+            raise Exception("Failed to takeoff for Mission 5. Aborting mission.")
         navigate_to_waypoint(master, WAYPOINTS[2][0], WAYPOINTS[2][1], WAYPOINTS[2][2])
         center_above_target(master, sock=data_sock, target_class_id=1)
 
-        # --- Leg 5: Fly to WP4 and Land ---
-        print("\n--- MISSION: Leg 5 - Final Landing at Waypoint 4 ---")
+        # --- Mission 5: Fly to WP4 and Land ---
+        print("\n--- MISSION 5: Final Landing at Waypoint 4 ---")
         send_control_command('pause')
         navigate_to_waypoint(master, WAYPOINTS[3][0], WAYPOINTS[3][1], WAYPOINTS[3][2])
         land_normally(master)

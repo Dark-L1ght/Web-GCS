@@ -1,6 +1,6 @@
 // --- CONFIGURATION ---
 const COMPANION_COMPUTER_IP = '192.168.10.118';
-const MISSION_ALTITUDE = 3.5; // Default altitude for waypoints
+const MISSION_ALTITUDE = 2.0; // Default altitude for waypoints
 
 // --- NEW: WAYPOINT STATE ---
 let recordedWaypoints = [];

@@ -34,7 +34,7 @@ model = YOLO('models/kpDetect-v2.1-yolov11n.engine')
 print("YOLO model loaded.")
 
 print("Initializing camera...")
-video_capture = cv2.VideoCapture(0)
+video_capture = cv2.VideoCapture(1)
 if not video_capture.isOpened():
     raise RuntimeError("Could not start camera.")
 video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
