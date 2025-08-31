@@ -187,7 +187,7 @@ def center_above_target(master, sock, target_class_id):
     
     search_start_time = time.time()
     centered_start_time = None
-    last_detection_time = time.time()
+    last_detection_time = time.time() # Initialize the timer once
 
     while True:
         if time.time() - search_start_time > CENTERING_TIMEOUT:
@@ -198,27 +198,29 @@ def center_above_target(master, sock, target_class_id):
             return False
 
         try:
-            # ... (the entire 'try' block for detection and velocity calculation remains IDENTICAL) ...
             alt_msg = master.recv_match(type='RANGEFINDER', blocking=True, timeout=0.2)
             current_alt = alt_msg.distance if alt_msg else CENTERING_ALTITUDE
             
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
-            search_start_time = time.time() 
-            last_detection_time = time.time() 
-
+            
+            # Check for a valid target FIRST
             if detection.get("state") != "TRACKING" or detection.get("class_id") != target_class_id:
-                raise socket.timeout()
+                raise socket.timeout() # If not valid, jump to reacquisition logic
+
+            # --- FIX: Only update timers AFTER a successful and valid detection ---
+            last_detection_time = time.time() 
+            search_start_time = time.time() # Reset the main timeout as well
+            # --- END FIX ---
 
             x, y = detection["x_center"], detection["y_center"]
             w, h = detection["frame_width"], detection["frame_height"]
             
+            # ... (rest of the function is identical) ...
             fwd_vel, right_vel = calculate_velocities(x, y, w, h)
-            
             horizontal_gain = get_dynamic_gain(current_alt)
             fwd_vel *= horizontal_gain
             right_vel *= horizontal_gain
-            
             alt_error = CENTERING_ALTITUDE - current_alt
             down_vel = -ALT_GAIN * alt_error
             
@@ -234,29 +236,22 @@ def center_above_target(master, sock, target_class_id):
                     centered_start_time = time.time()
                 elif time.time() - centered_start_time > CENTERING_CONFIRM_TIME:
                     print("Target centering confirmed.")
-                    
-                    # --- NEW: Logistic Drop Simulation ---
                     print(f"Simulating logistic drop. Holding position for {DROP_HOVER_DURATION} seconds...")
                     drop_start_time = time.time()
                     while time.time() - drop_start_time < DROP_HOVER_DURATION:
-                        # Continuously send a hover command to counteract drift
                         master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                             0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                             VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-                        
-                        # Print a countdown
                         time_left = DROP_HOVER_DURATION - (time.time() - drop_start_time)
                         sys.stdout.write(f"\rDropping... {time_left:.1f}s remaining. ")
                         sys.stdout.flush()
                         time.sleep(0.1)
-                    
                     print("\nDrop complete. Proceeding with mission.")
                     return True
             else:
                 centered_start_time = None
 
         except (socket.timeout, json.JSONDecodeError, KeyError):
-            # (Target Reacquisition)
             time_since_lost = time.time() - last_detection_time
             print(f"Searching for target ID {target_class_id}... Time since last seen: {time_since_lost:.1f}s")
             
@@ -286,7 +281,7 @@ def execute_precision_landing(master, sock, target_class_id):
     print(f"Starting precision landing sequence on target (ID: {target_class_id})...")
     
     search_start_time = time.time()
-    last_detection_time = time.time() # Start with the current time
+    last_detection_time = time.time() # Initialize the timer once
 
     while True:
         if time.time() - search_start_time > LANDING_TIMEOUT:
@@ -294,7 +289,8 @@ def execute_precision_landing(master, sock, target_class_id):
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-            return # Exit the function
+            # I've added a 'return False' here to make it consistent with the mission planner suggestion
+            return False
 
         try:
             alt_msg = master.recv_match(type='RANGEFINDER', blocking=False, timeout=0.05)
@@ -302,17 +298,21 @@ def execute_precision_landing(master, sock, target_class_id):
 
             data, _ = sock.recvfrom(1024)
             detection = json.loads(data.decode())
-            search_start_time = time.time() # Reset main timeout on successful detection
-            last_detection_time = time.time() # Update time of last successful detection
             
+            # Check for a valid target FIRST
             if detection.get("state") != "TRACKING" or detection.get("class_id") != target_class_id:
                 raise socket.timeout()
+
+            # --- FIX: Only update timers AFTER a successful and valid detection ---
+            last_detection_time = time.time()
+            search_start_time = time.time()
+            # --- END FIX ---
 
             x, y, area = detection["x_center"], detection["y_center"], detection["area"]
             w, h = detection["frame_width"], detection["frame_height"]
             
+            # ... (rest of the function is identical) ...
             fwd_vel, right_vel = calculate_velocities(x, y, w, h)
-            
             horizontal_gain = get_dynamic_gain(current_altitude)
             fwd_vel *= horizontal_gain
             right_vel *= horizontal_gain
@@ -331,30 +331,25 @@ def execute_precision_landing(master, sock, target_class_id):
             if current_altitude < LANDING_APPROACH_ALT and center_error_ratio < 0.15:
                 print("Target centered at low altitude. Switching to LAND mode.")
                 land_normally(master)
-                time.sleep(5)
-                return
+                time.sleep(2) # Pause after landing
+                # I've added a 'return True' here for consistency
+                return True
 
         except (socket.timeout, json.JSONDecodeError, KeyError):
-            # --- NEW: Target Reacquisition Logic ---
             time_since_lost = time.time() - last_detection_time
             print(f"Searching for target ID {target_class_id}... Time since last seen: {time_since_lost:.1f}s")
             
-            vz = 0 # Default to hover (zero vertical velocity)
-            
-            # Stage 1: Hover briefly
+            vz = 0 
             if time_since_lost < TARGET_LOST_HOVER_DURATION:
                 print("-> Phase 1: Hovering briefly.")
-                # vz remains 0
-            
-            # Stage 2: Ascend to search
             else:
                 print(f"-> Phase 2: Ascending to search at {REACQUIRE_ASCEND_SPEED} m/s.")
-                # In MAVLink NED frame, a negative Z velocity is UP.
                 vz = -REACQUIRE_ASCEND_SPEED
 
             master.mav.send(mavutil.mavlink.MAVLink_set_position_target_local_ned_message(
                 0, master.target_system, master.target_component, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                 VELOCITY_CONTROL_BITMASK, 0, 0, 0, 0, 0, vz, 0, 0, 0, 0, 0))
+            
 def main():
     """Main function to connect to the drone and run the new mission."""
 
